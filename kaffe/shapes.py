@@ -11,6 +11,13 @@ def get_filter_output_shape(i_h, i_w, params, round_func):
     o_w = (i_w + 2 * params.pad_w - params.kernel_w) / float(params.stride_w) + 1
     return (int(round_func(o_h)), int(round_func(o_w)))
 
+def get_filter_output_shape_deconv(i_h, i_w, params, round_func):
+    # Reverse the function above
+    #o_h = (i_h + 2 * params.pad_h - params.kernel_h) / float(params.stride_h) + 1
+    o_h = (i_h - 1) * float(params.stride_h) +  params.kernel_h - 2 * params.pad_h
+    o_w = (i_w - 1) * float(params.stride_w) +  params.kernel_w - 2 * params.pad_w
+    return (int(round_func(o_h)), int(round_func(o_w)))
+
 
 def get_strided_kernel_output_shape(node, round_func):
     assert node.layer is not None
@@ -21,6 +28,17 @@ def get_strided_kernel_output_shape(node, round_func):
     has_c_o = hasattr(params, 'num_output')
     c = params.num_output if has_c_o else input_shape.channels
     return TensorShape(input_shape.batch_size, c, o_h, o_w)
+
+def get_strided_kernel_output_shape_deconv(node, round_func):
+    assert node.layer is not None
+    input_shape = node.get_only_parent().output_shape
+    o_h, o_w = get_filter_output_shape_deconv(input_shape.height, input_shape.width,
+                                       node.layer.kernel_parameters, round_func)
+    params = node.layer.parameters
+    has_c_o = hasattr(params, 'num_output')
+    c = params.num_output if has_c_o else input_shape.channels
+    return TensorShape(input_shape.batch_size, c, o_h, o_w)
+
 
 
 def shape_not_implemented(node):
@@ -72,6 +90,9 @@ def shape_concat(node):
 
 def shape_convolution(node):
     return get_strided_kernel_output_shape(node, math.floor)
+
+def shape_deconvolution(node):
+    return get_strided_kernel_output_shape_deconv(node, math.floor)
 
 
 def shape_pool(node):

@@ -58,14 +58,21 @@ class Network(object):
         '''
         data_dict = np.load(data_path).item()
         for op_name in data_dict:
+            print 'op_name = ', op_name
             with tf.variable_scope(op_name, reuse=True):
-                for param_name, data in data_dict[op_name].iteritems():
-                    try:
-                        var = tf.get_variable(param_name)
-                        session.run(var.assign(data))
-                    except ValueError:
-                        if not ignore_missing:
-                            raise
+                try:
+                    print 'data_dict entry = ', data_dict[op_name]
+                    for param_name, data in data_dict[op_name].iteritems():
+                        try:
+                            var = tf.get_variable(param_name)
+                            session.run(var.assign(data))
+                        except ValueError:
+                            if not ignore_missing:
+                                raise
+                except AttributeError:
+                    print 'network:load error: op_name = %s, data_dict[op_name] = %s' %\
+                        (op_name, data_dict[op_name])
+                    raise
 
     def feed(self, *args):
         '''Set the input(s) for the next operation by replacing the terminal nodes.
@@ -129,12 +136,13 @@ class Network(object):
                 # This is the common-case. Convolve the input without any further complications.
                 output = convolve(input, kernel)
             else:
+                # TODO if group == N use DepthwiseConvolution
                 # Split the input into groups and then convolve each of them independently
-                input_groups = tf.split(3, group, input)
-                kernel_groups = tf.split(3, group, kernel)
+                input_groups = tf.split(axis=3, num_or_size_splits=group, value=input)
+                kernel_groups = tf.split(axis=3, num_or_size_splits=group, value=kernel)
                 output_groups = [convolve(i, k) for i, k in zip(input_groups, kernel_groups)]
                 # Concatenate the groups
-                output = tf.concat(3, output_groups)
+                output = tf.concat(axis=3, values=output_groups)
             # Add the biases
             if biased:
                 biases = self.make_var('biases', [c_o])
@@ -210,9 +218,17 @@ class Network(object):
             # in TensorFlow's NHWC ordering (unlike Caffe's NCHW).
             if input_shape[1] == 1 and input_shape[2] == 1:
                 input = tf.squeeze(input, squeeze_dims=[1, 2])
-            else:
-                raise ValueError('Rank 2 tensor input expected for softmax!')
+            #!!else:
+            #!!    raise ValueError('Rank 2 tensor input expected for softmax!  Input shape = %s' % input_shape)
         return tf.nn.softmax(input, name=name)
+
+    @layer
+    def scalar_mul(self, input, name):
+        with tf.variable_scope(name) as scope:
+            print 'scalar_mul: input shape = ', input.get_shape()
+            shape = []
+            scale = self.make_var('scale', shape=shape)
+            return tf.scalar_mul(scalar=scale, x=input)
 
     @layer
     def batch_normalization(self, input, name, scale_offset=True, relu=False):
@@ -242,3 +258,51 @@ class Network(object):
     def dropout(self, input, keep_prob, name):
         keep = 1 - self.use_dropout + (self.use_dropout * keep_prob)
         return tf.nn.dropout(input, keep, name=name)
+
+
+    @layer
+    def conv2d_transpose(self,
+             input,
+             k_h,
+             k_w,
+             c_o,
+             s_h,
+             s_w,
+             outputShape,
+             name,
+             relu=True,
+             padding=DEFAULT_PADDING,
+             group=1,
+             biased=True):
+        # Verify that the padding is acceptable
+        self.validate_padding(padding)
+        # Get the number of channels in the input
+        c_i = input.get_shape()[-1]
+        # Verify that the grouping parameter is valid
+        assert c_i % group == 0
+        assert c_o % group == 0
+        # Convolution for a given input and kernel
+        # transpose args: input, filter, outputShape, strides
+        convolve = lambda i, k: tf.nn.conv2d_transpose(i, k, tf.TensorShape(outputShape),
+                                                       [s_h, s_w], padding=padding)
+        with tf.variable_scope(name) as scope:
+            kernel = self.make_var('weights', shape=[k_h, k_w, c_i / group, c_o])
+            if group == 1:
+                # This is the common-case. Convolve the input without any further complications.
+                print 'args = ', input, kernel
+                output = convolve(input, kernel)
+            else:
+                # Split the input into groups and then convolve each of them independently
+                input_groups = tf.split(axis=3, num_or_size_splits=group, value=input)
+                kernel_groups = tf.split(axis=3, num_or_size_splits=group, value=kernel)
+                output_groups = [convolve(i, k) for i, k in zip(input_groups, kernel_groups)]
+                # Concatenate the groups
+                output = tf.concat(axis=3, values=output_groups)
+            # Add the biases
+            if biased:
+                biases = self.make_var('biases', [c_o])
+                output = tf.nn.bias_add(output, biases)
+            if relu:
+                # ReLU non-linearity
+                output = tf.nn.relu(output, name=scope.name)
+            return output

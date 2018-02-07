@@ -80,7 +80,12 @@ class TensorFlowMapper(NodeMapper):
     def get_kernel_params(self, node):
         kernel_params = node.layer.kernel_parameters
         input_shape = node.get_only_parent().output_shape
-        padding = get_padding_type(kernel_params, input_shape, node.output_shape)
+        #print 'node type = ', node.kind
+        if node.kind == 'Deconvolution':
+            # Just make it always valid
+            padding = 'VALID'
+        else:
+            padding = get_padding_type(kernel_params, input_shape, node.output_shape)
         # Only emit the padding if it's not the default value.
         padding = {'padding': padding} if padding != network.DEFAULT_PADDING else {}
         return (kernel_params, padding)
@@ -101,8 +106,33 @@ class TensorFlowMapper(NodeMapper):
         return MaybeActivated(node)('conv', kernel_params.kernel_h, kernel_params.kernel_w, c_o,
                                     kernel_params.stride_h, kernel_params.stride_w, **kwargs)
 
+    def map_deconvolution(self, node):
+        (kernel_params, kwargs) = self.get_kernel_params(node)
+        h = kernel_params.kernel_h
+        w = kernel_params.kernel_w
+        c_o = node.output_shape[1]
+        c_i = node.parents[0].output_shape[1]
+        group = node.parameters.group
+        if group != 1:
+            kwargs['group'] = group
+        if not node.parameters.bias_term:
+            kwargs['biased'] = False
+        assert kernel_params.kernel_h == h
+        assert kernel_params.kernel_w == w
+        print 'output shape = ', node.output_shape
+        # This is a kaffe/shapes TensorShape.
+        outputShape = node.output_shape
+        outputShape = [outputShape.batch_size, outputShape.height, outputShape.width, outputShape.channels]
+        return MaybeActivated(node)('conv2d_transpose', kernel_params.kernel_h, kernel_params.kernel_w, c_o,
+                                    kernel_params.stride_h, kernel_params.stride_w, outputShape,
+                                    **kwargs)
+
     def map_relu(self, node):
         return TensorFlowNode('relu')
+
+    def map_scale(self, node):
+        print 'map_scale: node data = ', node.data
+        return TensorFlowNode('scalar_mul')#, node.data['scale'][0])
 
     def map_pooling(self, node):
         pool_type = node.parameters.pool
